@@ -21,11 +21,11 @@ import yt_dlp
 #                    ⚙️ الإعدادات
 # ══════════════════════════════════════════════════════
 
-BOT_TOKEN    = os.environ.get("BOT_TOKEN", "")
-ADMIN_ID     = int(os.environ.get("ADMIN_ID", ""))
-CHANNEL_ID   = os.environ.get("CHANNEL_ID", "")
-CHANNEL_LINK = os.environ.get("CHANNEL_LINK", "")
-SMARTLINK    = os.environ.get("SMARTLINK", "")
+BOT_TOKEN    = os.environ.get("BOT_TOKEN", "8187868264:AAEnxSh8kgXxMkfaVZPqovmyMRb2i9LP6Bg")
+ADMIN_ID     = int(os.environ.get("ADMIN_ID", "7935901153"))
+CHANNEL_ID   = os.environ.get("CHANNEL_ID", "@Video_Grabber")
+CHANNEL_LINK = os.environ.get("CHANNEL_LINK", "https://t.me/Video_Grabber")
+SMARTLINK    = os.environ.get("SMARTLINK", "https://www.effectivegatecpm.com/awzbbi353?key=16d6ee5ad7058950ed0a6c70dec83b95")
 
 MAX_FILE_MB  = 50
 DB_FILE      = "data.json"

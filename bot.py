@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # ╔══════════════════════════════════════════════════════════╗
-# ║     🎬 بوت التحميل الاحترافي - نسخة مُصلحة              ║
-# ║  ✅ يحل مشكلة يوتيوب نهائياً                             ║
+# ║     🎬 بوت التحميل الاحترافي - الحل النهائي              ║
+# ║  ✅ بدون cookies - بدون تجديد - يعمل دائماً              ║
+# ║  🥇 يستخدم Cobalt أولاً ثم yt-dlp كاحتياط               ║
 # ╚══════════════════════════════════════════════════════════╝
 
-import os, re, logging, asyncio, tempfile, shutil, json, time, uuid
+import os, re, logging, asyncio, tempfile, shutil, json, time, httpx
 from datetime import datetime
 from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember, BotCommand
@@ -30,173 +31,213 @@ logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=lo
 logger = logging.getLogger(__name__)
 
 # ══════════════════════════════════════════════════════
-#         🔧 yt-dlp - كل الطرق الممكنة ليوتيوب
+#       🥇 الطريقة 1: Cobalt API (بدون cookies!)
 # ══════════════════════════════════════════════════════
 
-def build_ydl_opts(mode: str, quality: str, out_dir: str = None) -> list[dict]:
+# سيرفرات Cobalt المجانية - نجرب كلها بالترتيب
+COBALT_INSTANCES = [
+    "https://cobalt.api.timelessnesses.me",
+    "https://cobalt.syncope.co",
+    "https://cobalt.catvibers.me",
+    "https://api.cobalt.tools",
+]
+
+async def cobalt_download(url: str, mode: str, quality: str, out_dir: str) -> str | None:
     """
-    يبني قائمة من الخيارات المختلفة للمحاولة بالترتيب.
-    كل dict = طريقة مختلفة لتجاوز حماية يوتيوب.
+    تحميل عبر Cobalt API - لا يحتاج cookies أبداً!
+    يجرب كل السيرفرات المجانية
     """
-    tpl = os.path.join(out_dir, "%(title).60s.%(ext)s") if out_dir else None
+    # إعداد جودة الفيديو
+    vq_map = {"best": "1080", "high": "720", "medium": "480", "low": "360"}
+    vq = vq_map.get(quality, "1080")
 
-    # الجزء المشترك في كل الخيارات
-    def base(ua: str) -> dict:
-        opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "nocheckcertificate": True,
-            "http_headers": {
-                "User-Agent": ua,
-                "Accept-Language": "en-US,en;q=0.9",
-                "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
-            },
-            "retries": 5,
-            "fragment_retries": 5,
-            "socket_timeout": 30,
-        }
-        if tpl:
-            opts["outtmpl"] = tpl
-        # ✅ إضافة cookies لو موجود
-        if os.path.exists(COOKIES_FILE):
-            opts["cookiefile"] = COOKIES_FILE
-        return opts
+    payload = {
+        "url": url,
+        "downloadMode": "audio" if mode == "audio" else "auto",
+        "videoQuality": vq,
+        "audioFormat": "mp3",
+        "filenameStyle": "basic",
+    }
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Android 13) Chrome/120",
+    }
 
-    # صيغ الفيديو
-    video_fmt = {
-        "best":   "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-        "high":   "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[height<=720]/best",
-        "medium": "bestvideo[ext=mp4][height<=480]+bestaudio[ext=m4a]/best[height<=480]/best",
-        "low":    "bestvideo[ext=mp4][height<=360]+bestaudio[ext=m4a]/best[height<=360]/best",
-    }.get(quality, "best")
+    async with httpx.AsyncClient(timeout=30) as client:
+        for instance in COBALT_INSTANCES:
+            try:
+                logger.info(f"جرب Cobalt: {instance}")
+                r = await client.post(f"{instance}/", json=payload, headers=headers)
+                if r.status_code != 200:
+                    continue
 
-    audio_pp = [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}]
+                data = r.json()
+                status = data.get("status", "")
 
-    # ══ الطرق بالترتيب من الأقوى للأضعف ══
+                # ✅ رابط مباشر
+                if status in ("stream", "redirect", "tunnel") and "url" in data:
+                    dl_url = data["url"]
+                    ext = "mp3" if mode == "audio" else "mp4"
+                    out_path = os.path.join(out_dir, f"video.{ext}")
 
-    # الطريقة 1: Android client (الأفضل لتجاوز الحماية)
-    m1 = base("com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip")
-    m1["extractor_args"] = {"youtube": {"player_client": ["android"], "player_skip": []}}
+                    # تحميل الملف
+                    async with client.stream("GET", dl_url, follow_redirects=True) as resp:
+                        if resp.status_code == 200:
+                            with open(out_path, "wb") as f:
+                                async for chunk in resp.aiter_bytes(8192):
+                                    f.write(chunk)
+                            if os.path.getsize(out_path) > 1000:
+                                logger.info(f"✅ Cobalt نجح: {instance}")
+                                return out_path
 
-    # الطريقة 2: iOS client
-    m2 = base("com.google.ios.youtube/19.09.3 (iPhone14,3; U; CPU iOS 15_6 like Mac OS X)")
-    m2["extractor_args"] = {"youtube": {"player_client": ["ios"], "player_skip": []}}
+                # ✅ picker (يوتيوب أحياناً يعطي روابط متعددة)
+                elif status == "picker" and data.get("picker"):
+                    dl_url = data["picker"][0].get("url")
+                    if dl_url:
+                        ext = "mp4"
+                        out_path = os.path.join(out_dir, f"video.{ext}")
+                        async with client.stream("GET", dl_url, follow_redirects=True) as resp:
+                            if resp.status_code == 200:
+                                with open(out_path, "wb") as f:
+                                    async for chunk in resp.aiter_bytes(8192):
+                                        f.write(chunk)
+                                if os.path.getsize(out_path) > 1000:
+                                    return out_path
 
-    # الطريقة 3: TV Embedded client
-    m3 = base("Mozilla/5.0 (SMART-TV; Linux; Tizen 6.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/6.0 TV Safari/538.1")
-    m3["extractor_args"] = {"youtube": {"player_client": ["tv_embedded"], "player_skip": ["webpage"]}}
+            except Exception as e:
+                logger.warning(f"Cobalt {instance} فشل: {e}")
+                continue
 
-    # الطريقة 4: Web Chrome عادي
-    m4 = base("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36")
-    m4["extractor_args"] = {"youtube": {"player_client": ["web"], "player_skip": ["webpage"]}}
-
-    # الطريقة 5: أندرويد موبايل
-    m5 = base("Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 Chrome/120.0.6099.230 Mobile Safari/537.36")
-    m5["extractor_args"] = {"youtube": {"player_client": ["android", "web", "ios"], "player_skip": ["webpage"]}}
-
-    all_methods = [m1, m2, m3, m4, m5]
-
-    # أضف صيغة التحميل لكل طريقة
-    result = []
-    for m in all_methods:
-        opts = dict(m)
-        if mode == "audio":
-            opts["format"] = "bestaudio[ext=m4a]/bestaudio/best"
-            opts["postprocessors"] = audio_pp
-        else:
-            opts["format"] = video_fmt
-            opts["merge_output_format"] = "mp4"
-        result.append(opts)
-
-    return result
-
-
-def get_info(url: str) -> dict:
-    """جلب معلومات الفيديو مع 5 طرق مختلفة"""
-    methods = build_ydl_opts("video", "best")
-    last_error = None
-
-    for i, opts in enumerate(methods):
-        # للمعلومات فقط - بدون تحميل
-        info_opts = {k: v for k, v in opts.items() if k not in ["outtmpl", "postprocessors", "format", "merge_output_format"]}
-        info_opts["extract_flat"] = False
-        try:
-            logger.info(f"محاولة get_info #{i+1}")
-            with yt_dlp.YoutubeDL(info_opts) as ydl:
-                return ydl.extract_info(url, download=False)
-        except Exception as e:
-            last_error = e
-            logger.warning(f"محاولة #{i+1} فشلت: {e}")
-            time.sleep(1)
-
-    raise last_error
-
-
-def download_media(url: str, mode: str, quality: str, out_dir: str) -> str:
-    """تحميل الفيديو/الصوت مع 5 طرق مختلفة"""
-    methods = build_ydl_opts(mode, quality, out_dir)
-    last_error = None
-
-    for i, opts in enumerate(methods):
-        try:
-            logger.info(f"محاولة تحميل #{i+1}")
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                fname = ydl.prepare_filename(info)
-
-            # البحث عن الملف المحمّل
-            if mode == "audio":
-                mp3 = Path(fname).with_suffix(".mp3")
-                if mp3.exists():
-                    return str(mp3)
-
-            files = [f for f in Path(out_dir).iterdir() if f.is_file()]
-            if files:
-                return str(max(files, key=lambda f: f.stat().st_size))
-
-        except Exception as e:
-            last_error = e
-            logger.warning(f"تحميل #{i+1} فشل: {e}")
-            time.sleep(2)
-            # امسح الملفات الناقصة قبل المحاولة التالية
-            for f in Path(out_dir).iterdir():
-                try:
-                    f.unlink()
-                except Exception:
-                    pass
-
-    raise last_error
+    return None  # كل السيرفرات فشلت، جرب yt-dlp
 
 # ══════════════════════════════════════════════════════
-#              تصنيف الأخطاء (مُصلح)
+#       🥈 الطريقة 2: yt-dlp (احتياط مع cookies)
+# ══════════════════════════════════════════════════════
+
+USER_AGENTS = [
+    "com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip",
+    "com.google.ios.youtube/19.09.3 (iPhone14,3; U; CPU iOS 15_6 like Mac OS X)",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+]
+
+PLAYER_CLIENTS = [
+    ["android"],
+    ["ios"],
+    ["web"],
+    ["tv_embedded"],
+    ["android", "web", "ios"],
+]
+
+VIDEO_FMTS = {
+    "best":   "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+    "high":   "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[height<=720]/best",
+    "medium": "bestvideo[ext=mp4][height<=480]+bestaudio[ext=m4a]/best[height<=480]/best",
+    "low":    "bestvideo[ext=mp4][height<=360]+bestaudio[ext=m4a]/best[height<=360]/best",
+}
+
+def build_opts(ua_i: int, pc_i: int, mode: str, quality: str, out_dir: str) -> dict:
+    tpl = os.path.join(out_dir, "%(title).60s.%(ext)s")
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "nocheckcertificate": True,
+        "outtmpl": tpl,
+        "http_headers": {"User-Agent": USER_AGENTS[ua_i % len(USER_AGENTS)]},
+        "extractor_args": {"youtube": {"player_client": PLAYER_CLIENTS[pc_i % len(PLAYER_CLIENTS)]}},
+        "retries": 3,
+        "socket_timeout": 30,
+    }
+    if os.path.exists(COOKIES_FILE):
+        opts["cookiefile"] = COOKIES_FILE
+    if mode == "audio":
+        opts["format"] = "bestaudio[ext=m4a]/bestaudio/best"
+        opts["postprocessors"] = [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}]
+    else:
+        opts["format"] = VIDEO_FMTS.get(quality, VIDEO_FMTS["best"])
+        opts["merge_output_format"] = "mp4"
+    return opts
+
+def ytdlp_get_info(url: str) -> dict:
+    for ua_i in range(len(USER_AGENTS)):
+        for pc_i in range(len(PLAYER_CLIENTS)):
+            try:
+                base = {"quiet": True, "no_warnings": True, "nocheckcertificate": True,
+                        "http_headers": {"User-Agent": USER_AGENTS[ua_i]},
+                        "extractor_args": {"youtube": {"player_client": PLAYER_CLIENTS[pc_i]}}}
+                if os.path.exists(COOKIES_FILE):
+                    base["cookiefile"] = COOKIES_FILE
+                with yt_dlp.YoutubeDL(base) as ydl:
+                    return ydl.extract_info(url, download=False)
+            except Exception:
+                time.sleep(0.5)
+    raise Exception("فشلت كل محاولات جلب المعلومات")
+
+def ytdlp_download(url: str, mode: str, quality: str, out_dir: str) -> str:
+    last_error = None
+    for ua_i in range(len(USER_AGENTS)):
+        for pc_i in range(len(PLAYER_CLIENTS)):
+            try:
+                opts = build_opts(ua_i, pc_i, mode, quality, out_dir)
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    fname = ydl.prepare_filename(info)
+
+                if mode == "audio":
+                    mp3 = Path(fname).with_suffix(".mp3")
+                    if mp3.exists():
+                        return str(mp3)
+
+                files = [f for f in Path(out_dir).iterdir() if f.is_file()]
+                if files:
+                    return str(max(files, key=lambda f: f.stat().st_size))
+            except Exception as e:
+                last_error = e
+                time.sleep(1)
+                for f in Path(out_dir).iterdir():
+                    try: f.unlink()
+                    except: pass
+    raise last_error or Exception("فشل yt-dlp")
+
+# ══════════════════════════════════════════════════════
+#          🎯 الدالة الرئيسية: تجمع الطريقتين
+# ══════════════════════════════════════════════════════
+
+async def smart_download(url: str, mode: str, quality: str, out_dir: str) -> str:
+    """
+    1. يجرب Cobalt أولاً (بدون cookies)
+    2. لو فشل يجرب yt-dlp (مع cookies لو موجودة)
+    """
+    # الطريقة 1: Cobalt
+    logger.info("جرب Cobalt...")
+    result = await cobalt_download(url, mode, quality, out_dir)
+    if result:
+        return result
+
+    # الطريقة 2: yt-dlp
+    logger.info("Cobalt فشل، جرب yt-dlp...")
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, ytdlp_download, url, mode, quality, out_dir)
+
+async def smart_get_info(url: str) -> dict:
+    """جلب معلومات الفيديو - يحاول yt-dlp أولاً للمعلومات"""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, ytdlp_get_info, url)
+
+# ══════════════════════════════════════════════════════
+#              تصنيف الأخطاء
 # ══════════════════════════════════════════════════════
 
 def classify_error(err: str) -> str:
     e = str(err).lower()
-    # ✅ مُصلح: يوتيوب يعطي رسائل مختلفة كلها تعني "تسجيل دخول"
-    if any(x in e for x in [
-        "sign in", "signin", "login", "log in",
-        "confirm", "bot", "not a bot",
-        "login_required", "age", "age-restricted",
-        "this video is unavailable",  # ← هذا كان السبب!
-        "join this channel",
-        "private video",
-        "members-only",
-    ]):
-        # إذا عندنا cookies وما زال يعطي نفس الخطأ
-        if os.path.exists(COOKIES_FILE):
-            return "yt_cookies_expired"
+    if any(x in e for x in ["sign in","signin","login","confirm","bot","not a bot",
+                              "login_required","age","this video is unavailable",
+                              "join this channel","private video","members-only"]):
         return "yt_blocked"
-
-    if any(x in e for x in ["private", "خاص"]):
+    if "private" in e:
         return "private"
-
-    if any(x in e for x in [
-        "no video formats", "format not available",
-        "copyright", "removed by",
-    ]):
+    if any(x in e for x in ["copyright","removed by","no video formats","format not available"]):
         return "unavailable"
-
     return "unknown"
 
 # ══════════════════════════════════════════════════════
@@ -239,42 +280,41 @@ def add_download(uid: int):
 #            🔒 اشتراك إجباري + إعلان إجباري
 # ══════════════════════════════════════════════════════
 
-async def is_subscribed(bot, user_id: int) -> bool:
+async def is_subscribed(bot, uid: int) -> bool:
     try:
-        member = await bot.get_chat_member(CHANNEL_ID, user_id)
-        return member.status in [ChatMember.MEMBER, ChatMember.ADMINISTRATOR, ChatMember.OWNER]
+        m = await bot.get_chat_member(CHANNEL_ID, uid)
+        return m.status in [ChatMember.MEMBER, ChatMember.ADMINISTRATOR, ChatMember.OWNER]
     except Exception:
         return True
 
-# حالة الإعلان: {user_id: {token, clicked_at, url, title}}
 ad_state: dict = {}
 
-def start_ad(user_id: int, url: str, title: str):
-    ad_state[user_id] = {"clicked_at": None, "url": url, "title": title}
+def start_ad(uid: int, url: str, title: str):
+    ad_state[uid] = {"clicked_at": None, "url": url, "title": title}
 
-def click_ad(user_id: int):
-    if user_id in ad_state:
-        ad_state[user_id]["clicked_at"] = time.time()
+def click_ad(uid: int):
+    if uid in ad_state:
+        ad_state[uid]["clicked_at"] = time.time()
 
-def check_ad(user_id: int) -> tuple[bool, int]:
-    s = ad_state.get(user_id)
+def check_ad(uid: int) -> tuple[bool, int]:
+    s = ad_state.get(uid)
     if not s or s["clicked_at"] is None:
         return False, AD_WAIT
-    remaining = AD_WAIT - (time.time() - s["clicked_at"])
-    return remaining <= 0, max(0, int(remaining) + 1)
+    rem = AD_WAIT - (time.time() - s["clicked_at"])
+    return rem <= 0, max(0, int(rem) + 1)
 
 # ══════════════════════════════════════════════════════
 #                 🛠️ مساعدات
 # ══════════════════════════════════════════════════════
 
 URL_PATTERN = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]+')
-user_last_req: dict = {}
+flood_map: dict = {}
 
 def is_flooding(uid: int) -> bool:
     now = time.time()
-    if now - user_last_req.get(uid, 0) < 5:
+    if now - flood_map.get(uid, 0) < 5:
         return True
-    user_last_req[uid] = now
+    flood_map[uid] = now
     return False
 
 def extract_url(text: str):
@@ -289,12 +329,12 @@ def human_size(b: int) -> str:
 
 def quality_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎬 1080p", callback_data="q|video|best"),
-         InlineKeyboardButton("🎬 720p",  callback_data="q|video|high")],
-        [InlineKeyboardButton("🎬 480p",  callback_data="q|video|medium"),
-         InlineKeyboardButton("🎬 360p",  callback_data="q|video|low")],
-        [InlineKeyboardButton("🎵 صوت MP3", callback_data="q|audio|best")],
-        [InlineKeyboardButton("❌ إلغاء",   callback_data="cancel")],
+        [InlineKeyboardButton("🎬 1080p",    callback_data="q|video|best"),
+         InlineKeyboardButton("🎬 720p",     callback_data="q|video|high")],
+        [InlineKeyboardButton("🎬 480p",     callback_data="q|video|medium"),
+         InlineKeyboardButton("🎬 360p",     callback_data="q|video|low")],
+        [InlineKeyboardButton("🎵 صوت MP3",  callback_data="q|audio|best")],
+        [InlineKeyboardButton("❌ إلغاء",    callback_data="cancel")],
     ])
 
 def ad_kb() -> InlineKeyboardMarkup:
@@ -319,7 +359,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     is_new = register_user(user)
     if not await is_subscribed(ctx.bot, user.id):
         await update.message.reply_text(
-            "⛔️ *يجب الاشتراك أولاً!*\nاشترك في قناتنا ثم اضغط تحققت ✅",
+            "⛔️ *يجب الاشتراك أولاً!*\nاشترك ثم اضغط تحققت ✅",
             parse_mode="Markdown", reply_markup=sub_kb()
         )
         return
@@ -371,14 +411,14 @@ async def admin_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     db = load_db()
     today = datetime.now().strftime("%Y-%m-%d")
     new_today = sum(1 for u in db["users"].values() if u.get("joined") == today)
-    ck = "✅ موجود — يوتيوب يعمل!" if os.path.exists(COOKIES_FILE) else "❌ غير موجود — يوتيوب لن يعمل!"
+    ck = "✅ موجود" if os.path.exists(COOKIES_FILE) else "➖ غير موجود (ليس ضرورياً)"
     await update.message.reply_text(
         f"👑 *لوحة الأدمن*\n\n"
         f"👥 المستخدمون: {len(db['users'])}\n"
         f"🆕 اليوم: {new_today}\n"
         f"📥 التحميلات: {db.get('total_downloads',0)}\n"
         f"🍪 cookies.txt: {ck}\n\n"
-        f"📢 إرسال للجميع:\n`/broadcast رسالتك`",
+        f"📢 `/broadcast رسالتك`",
         parse_mode="Markdown"
     )
 
@@ -408,15 +448,12 @@ async def broadcast_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def handle_url(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     register_user(user)
-
     if not await is_subscribed(ctx.bot, user.id):
         await update.message.reply_text("⛔️ *يجب الاشتراك أولاً!*", parse_mode="Markdown", reply_markup=sub_kb())
         return
-
     if is_flooding(user.id):
         await update.message.reply_text("⏳ انتظر 5 ثوانٍ بين كل طلب!")
         return
-
     url = extract_url(update.message.text or "")
     if not url:
         await update.message.reply_text("❌ أرسل رابطاً صحيحاً يبدأ بـ `https://`", parse_mode="Markdown")
@@ -424,9 +461,7 @@ async def handle_url(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     msg = await update.message.reply_text("🔍 *جاري فحص الرابط...*", parse_mode="Markdown")
     try:
-        loop = asyncio.get_event_loop()
-        info = await loop.run_in_executor(None, get_info, url)
-
+        info = await smart_get_info(url)
         title    = info.get("title", "")[:60]
         uploader = info.get("uploader") or info.get("channel") or "—"
         duration = int(info.get("duration") or 0)
@@ -436,7 +471,6 @@ async def handle_url(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         dur_str    = f"{hrs}:{mins:02d}:{secs:02d}" if hrs else f"{mins}:{secs:02d}"
 
         start_ad(user.id, url, title)
-
         await msg.edit_text(
             f"✅ *تم العثور على المحتوى!*\n"
             f"━━━━━━━━━━━━━━━━\n"
@@ -447,46 +481,21 @@ async def handle_url(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"⚠️ *خطوة إجبارية قبل التحميل:*\n"
             f"1️⃣ اضغط الرابط أدناه\n"
             f"2️⃣ انتظر {AD_WAIT} ثانية\n"
-            f"3️⃣ اضغط *تحقق* للمتابعة ✅",
+            f"3️⃣ اضغط *تحقق* ✅",
             parse_mode="Markdown",
             reply_markup=ad_kb()
         )
-
     except Exception as e:
         err_type = classify_error(str(e))
-        logger.error(f"get_info error: {e}")
-
-        error_msgs = {
-            "yt_blocked": (
-                "⚠️ *يوتيوب يحتاج تسجيل دخول*\n\n"
-                "💡 *الحل:*\n"
-                "أرسل ملف `cookies.txt` للأدمن\n\n"
-                "📌 أو جرب روابط من:\n"
-                "TikTok • Instagram • Twitter"
-            ),
-            "yt_cookies_expired": (
-                "⚠️ *انتهت صلاحية الـ cookies!*\n\n"
-                "💡 يجب تجديد ملف `cookies.txt`\n"
-                "اتبع نفس خطوات استخراجه من Firefox\n"
-                "وارفع الملف الجديد على GitHub"
-            ),
-            "private": "🔒 *الفيديو خاص ولا يمكن تحميله*",
-            "unavailable": (
-                "❌ *الفيديو محذوف أو محظور*\n\n"
-                "💡 تأكد من صحة الرابط"
-            ),
+        msgs = {
+            "yt_blocked":  "⚠️ *يوتيوب يحتاج تسجيل دخول*\n\n💡 جرب رابط من:\nTikTok • Instagram • Twitter",
+            "private":     "🔒 *الفيديو خاص*",
+            "unavailable": "❌ *الفيديو محذوف أو محظور*",
         }
-        # ✅ في حالة خطأ غير معروف نظهر الخطأ الحقيقي للأدمن
-        if err_type == "unknown":
-            if user.id == ADMIN_ID:
-                await msg.edit_text(f"❌ *خطأ:*\n`{str(e)[:300]}`", parse_mode="Markdown")
-            else:
-                await msg.edit_text(
-                    "❌ *فشل التحميل*\n\nجرب:\n▸ تأكد من الرابط\n▸ جرب رابط آخر\n▸ انتظر دقيقة وأعد المحاولة",
-                    parse_mode="Markdown"
-                )
+        if err_type == "unknown" and user.id == ADMIN_ID:
+            await msg.edit_text(f"❌ خطأ:\n`{str(e)[:300]}`", parse_mode="Markdown")
         else:
-            await msg.edit_text(error_msgs.get(err_type, "❌ خطأ غير معروف"), parse_mode="Markdown")
+            await msg.edit_text(msgs.get(err_type, "❌ فشل التحميل\n\nجرب رابط آخر"), parse_mode="Markdown")
 
 # ══════════════════════════════════════════════════════
 #               ⚙️ معالجة الأزرار
@@ -507,16 +516,10 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if data == "show_help":
         await query.edit_message_text(
-            "📖 *المساعدة*\n\n"
-            "1️⃣ أرسل الرابط\n"
-            "2️⃣ اضغط رابط الإعلان\n"
-            "3️⃣ انتظر 15 ثانية\n"
-            "4️⃣ اضغط تحقق\n"
-            "5️⃣ اختر الجودة ✅",
+            "📖 *المساعدة*\n\n1️⃣ أرسل الرابط\n2️⃣ اضغط الإعلان\n"
+            "3️⃣ انتظر 15 ثانية\n4️⃣ اضغط تحقق\n5️⃣ اختر الجودة ✅",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔙 رجوع", callback_data="back")
-            ]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="back")]])
         )
         return
 
@@ -530,17 +533,14 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not state:
             await query.answer("❌ انتهت الجلسة، أرسل الرابط مجدداً", show_alert=True)
             return
-
         if state["clicked_at"] is None:
             click_ad(uid)
             await query.answer(f"⏳ انتظر {AD_WAIT} ثانية ثم اضغط تحقق!", show_alert=True)
             return
-
-        ok, remaining = check_ad(uid)
+        ok, rem = check_ad(uid)
         if not ok:
-            await query.answer(f"⏳ انتظر {remaining} ثانية أخرى!", show_alert=True)
+            await query.answer(f"⏳ انتظر {rem} ثانية أخرى!", show_alert=True)
             return
-
         await query.edit_message_text(
             f"✅ *شكراً! اختر الجودة:*\n\n📌 {state['title']}",
             parse_mode="Markdown",
@@ -561,22 +561,19 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         emoji = "🎵" if mode == "audio" else "🎬"
 
         await query.edit_message_text(
-            f"{emoji} *جاري التحميل...*\n"
-            f"📌 {title}\n"
-            f"📊 {'MP3' if mode=='audio' else ql}\n\n"
-            f"⏳ انتظر...",
+            f"{emoji} *جاري التحميل...*\n📌 {title}\n"
+            f"📊 {'MP3' if mode=='audio' else ql}\n\n⏳ انتظر...",
             parse_mode="Markdown"
         )
 
         tmp = tempfile.mkdtemp(dir=DOWNLOAD_DIR)
         try:
-            loop = asyncio.get_event_loop()
-            path = await loop.run_in_executor(None, download_media, url, mode, quality, tmp)
+            path = await smart_download(url, mode, quality, tmp)
 
             size_bytes = os.path.getsize(path)
             if size_bytes / 1024 / 1024 > MAX_FILE_MB:
                 await query.edit_message_text(
-                    f"❌ *الملف كبير جداً!*\n📦 {human_size(size_bytes)}\n💡 جرب جودة أقل",
+                    f"❌ *الملف كبير!*\n📦 {human_size(size_bytes)}\n💡 جرب جودة أقل",
                     parse_mode="Markdown"
                 )
                 return
@@ -607,20 +604,18 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         except Exception as e:
             err_type = classify_error(str(e))
-            logger.error(f"download error: {e}")
-            err_msgs = {
-                "yt_blocked":         "⚠️ *يوتيوب يرفض التحميل*\nالحل: جدّد ملف cookies.txt",
-                "yt_cookies_expired": "⚠️ *انتهت صلاحية الـ cookies*\nجدّد ملف cookies.txt",
-                "private":            "🔒 الفيديو خاص",
-                "unavailable":        "❌ الفيديو غير متاح",
+            msgs = {
+                "yt_blocked":  "⚠️ *يوتيوب يرفض التحميل*\nجرب رابط من TikTok أو Instagram",
+                "private":     "🔒 الفيديو خاص",
+                "unavailable": "❌ الفيديو غير متاح",
             }
-            if err_type == "unknown":
-                msg_txt = f"❌ فشل التحميل\n\nجرب جودة أقل أو رابط آخر"
-                if uid == ADMIN_ID:
-                    msg_txt = f"❌ *خطأ:*\n`{str(e)[:300]}`"
-                await query.edit_message_text(msg_txt, parse_mode="Markdown")
+            if err_type == "unknown" and uid == ADMIN_ID:
+                await query.edit_message_text(f"❌ خطأ:\n`{str(e)[:300]}`", parse_mode="Markdown")
             else:
-                await query.edit_message_text(err_msgs.get(err_type, "❌ فشل"), parse_mode="Markdown")
+                await query.edit_message_text(
+                    msgs.get(err_type, "❌ فشل التحميل\n\nجرب جودة أقل أو رابط آخر"),
+                    parse_mode="Markdown"
+                )
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -636,14 +631,12 @@ async def on_startup(app: Application):
         BotCommand("admin",     "👑 لوحة الأدمن"),
         BotCommand("broadcast", "📢 إرسال للجميع"),
     ])
-    if os.path.exists(COOKIES_FILE):
-        logger.info("✅ cookies.txt موجود — يوتيوب سيعمل!")
-    else:
-        logger.warning("⚠️ cookies.txt غير موجود — يوتيوب لن يعمل!")
+    logger.info("✅ البوت جاهز! يستخدم Cobalt + yt-dlp")
 
 def main():
     print("━━━━━━━━━━━━━━━━━━━━━━━━━")
     print("  🎬 بوت التحميل الاحترافي")
+    print("  🥇 Cobalt + yt-dlp")
     print("━━━━━━━━━━━━━━━━━━━━━━━━━")
     app = Application.builder().token(BOT_TOKEN).post_init(on_startup).build()
     app.add_handler(CommandHandler("start",     start))

@@ -1,0 +1,43 @@
+name: 🤖 Telegram Bot
+
+on:
+  # تشغيل تلقائي كل 5 ساعات و50 دقيقة (قبل حد الـ 6 ساعات)
+  schedule:
+    - cron: '0 */5 * * *'
+  # تشغيل يدوي من GitHub
+  workflow_dispatch:
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350  # أقل من 6 ساعات
+
+    steps:
+      # الخطوة 1: تحميل الكود
+      - name: 📥 تحميل الكود
+        uses: actions/checkout@v4
+
+      # الخطوة 2: تثبيت Python
+      - name: 🐍 تثبيت Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # الخطوة 3: تثبيت ffmpeg
+      - name: 🎬 تثبيت ffmpeg
+        run: sudo apt-get install -y ffmpeg
+
+      # الخطوة 4: تثبيت المكتبات
+      - name: 📦 تثبيت المكتبات
+        run: pip install -r requirements.txt
+
+      # الخطوة 5: تشغيل البوت
+      - name: 🚀 تشغيل البوت
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          ADMIN_ID: ${{ secrets.ADMIN_ID }}
+          CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
+          CHANNEL_LINK: ${{ secrets.CHANNEL_LINK }}
+          SMARTLINK: ${{ secrets.SMARTLINK }}
+        run: python bot.py
+        

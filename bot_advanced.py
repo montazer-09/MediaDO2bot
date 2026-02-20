@@ -32,8 +32,8 @@ import yt_dlp
 #             ⚙️ الإعدادات
 # ══════════════════════════════════════════
 
-BOT_TOKEN     = "ضع_توكن_البوت_هنا"        # من @BotFather
-ADMIN_ID      = 123456789                   # Telegram ID بتاعك
+BOT_TOKEN     = "8589093119:AAEEkDK9-e6mxyMf5dfz8ZY3IXCkIecvTfM"        # من @BotFather
+ADMIN_ID      = 7935901153                   # Telegram ID بتاعك
 MAX_FILE_MB   = 50                          # حد حجم الملف
 DB_FILE       = "users.json"               # قاعدة بيانات بسيطة
 

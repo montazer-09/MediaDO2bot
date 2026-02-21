@@ -42,7 +42,7 @@ COBALT_INSTANCES = [
     "https://api.cobalt.tools",
 ]
 
-async def cobalt_download(url: str, mode: str, quality: str, out_dir: str) -> str | None:
+async def cobalt_download(url: str, mode: str, quality: str, out_dir: str)
     """
     تحميل عبر Cobalt API - لا يحتاج cookies أبداً!
     يجرب كل السيرفرات المجانية
